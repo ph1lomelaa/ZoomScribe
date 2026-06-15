@@ -1,0 +1,12 @@
+.git/
+.agents/
+.codex/
+**/__pycache__/
+**/*.py[cod]
+**/node_modules/
+frontend/dist/
+backend/data/
+backend/.env
+frontend/.env
+.env
+.DS_Store

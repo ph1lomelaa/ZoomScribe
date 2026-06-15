@@ -1,64 +1,102 @@
-# 🎙 ZoomScribe — AI Конспекты уроков
+# ZoomScribe — AI Конспекты уроков
 
 Веб-приложение для конспектирования уроков Zoom/Teams с помощью AI.
 
-## ✨ Возможности
+## Возможности
 
-- 🎙 **Реальная транскрипция** через Web Speech API (Chrome/Edge)
-- 🤖 **AI конспект** через Claude (Anthropic API) 
-- 📋 **Карточки сессий** с информацией об ученике и менеджере
-- 📚 **Список конспектов** с поиском
-- 🌍 **Мультиязычность**: русский, английский, казахский
-- 💾 **Локальная БД** на SQLite — ничего не уходит в облако
+- Реальная транскрипция через Deepgram в браузере
+- AI-конспект через Groq или Anthropic
+- Карточки сессий с информацией об ученике и менеджере
+- Список конспектов с поиском
+- Мультиязычность: русский, английский, казахский
+- SQLite БД на backend
 
-## 🚀 Быстрый старт
+## Быстрый старт через Docker
 
-### 1. Установите зависимости
+```bash
+cp .env.example .env
+# заполните .env ключами
+docker compose up -d --build
+```
+
+Откройте:
+
+```text
+http://localhost:8080
+```
+
+Frontend отдается через Nginx, а `/api/*` проксируется на FastAPI backend внутри Docker Compose. Данные SQLite хранятся в volume `zoomscribe_backend_data`.
+
+Подробная инструкция по переносу на сервер: [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Локальная разработка
+
+### 1. Установите backend-зависимости
 
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-### 2. Запустите сервер
+### 2. Установите frontend-зависимости
 
 ```bash
-# Без AI (демо-режим):
-cd backend
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+cd frontend
+npm install
+```
 
-# С AI (нужен API ключ Anthropic):
-export ANTHROPIC_API_KEY=sk-ant-...
+### 3. Настройте env
+
+```bash
+cp .env.example .env
+```
+
+Заполните `.env` ключами. `./start.sh` и Docker Compose читают общий корневой `.env`.
+
+`VITE_DEEPGRAM_API_KEY` встраивается в frontend-бандл и виден в браузере после деплоя.
+
+### 4. Запустите
+
+```bash
+./start.sh
+```
+
+Или вручную:
+
+```bash
+cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 3. Откройте приложение
+```bash
+cd frontend
+npm run dev
+```
 
-Откройте файл `frontend/index.html` в **Chrome или Edge**  
-(Web Speech API работает только в этих браузерах)
+Frontend: `http://localhost:5173`, backend: `http://localhost:8000`.
 
-> ⚠️ Для работы Speech API нужен HTTPS или localhost.  
-> Если открываете через файловую систему, некоторые браузеры блокируют микрофон.  
-> Используйте Live Server (VS Code) или `python3 -m http.server 3000` в папке `frontend`.
-
-## 📁 Структура проекта
+## Структура проекта
 
 ```
 zoomscribe/
 ├── backend/
+│   ├── Dockerfile
 │   ├── main.py           # FastAPI сервер
 │   ├── requirements.txt
 │   └── data/             # SQLite база (создаётся автоматически)
 │       └── scribe.db
 ├── frontend/
-│   ├── index.html        # Главная страница
-│   ├── style.css         # Дизайн
-│   └── app.js            # Весь фронтенд (SPA)
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   ├── src/              # React/Vite frontend
+│   └── package.json
+├── docker-compose.yml
+├── DEPLOYMENT.md
 ├── start.sh              # Скрипт запуска
 └── README.md
 ```
 
-## 🔌 API Endpoints
+## API Endpoints
 
 | Метод | URL | Описание |
 |-------|-----|----------|
@@ -73,27 +111,32 @@ zoomscribe/
 | GET | `/api/notes/:id` | Конспект по ID |
 | GET | `/api/health` | Статус сервера |
 
-## 🎙 Как конспектировать Zoom/Teams
+## Как конспектировать Zoom/Teams
 
-1. **Запустите Zoom/Teams** — войдите в звонок
-2. **Откройте ZoomScribe** — создайте новую сессию
-3. **Включите микрофон** в ZoomScribe — он будет слушать **системный звук** (колонки)
-4. **Или подключите наушники** — тогда микрофон захватит только вашу речь
-5. **Нажмите «Завершить»** — AI сформирует конспект
+1. Запустите Zoom/Teams и войдите в звонок.
+2. Откройте ZoomScribe и создайте новую сессию.
+3. Выберите захват системного звука или микрофона.
+4. Нажмите «Завершить» — AI сформирует конспект.
 
-> 💡 Для захвата звука собеседника рекомендуется включить «Стерео Микшер» в настройках Windows или использовать BlackHole/Loopback на macOS.
+Для микрофона и захвата экрана/системного звука браузеру нужен HTTPS, кроме `localhost`. На сервере обязательно настройте домен с TLS.
 
-## ⚙️ Переменные окружения
+## Переменные окружения
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Ключ Anthropic API | `` (демо-режим) |
+| `GROQ_API_KEY` | Ключ Groq API, имеет приоритет над Anthropic | `` |
+| `GROQ_MODEL` | Модель Groq | `llama-3.3-70b-versatile` |
+| `ANTHROPIC_API_KEY` | Ключ Anthropic API | `` |
+| `VITE_DEEPGRAM_API_KEY` | Ключ Deepgram для браузерной транскрипции | `` |
 | `DB_PATH` | Путь к SQLite БД | `./data/scribe.db` |
 | `PORT` | Порт сервера | `8000` |
+| `CORS_ORIGINS` | Разрешенные origins для прямых запросов к backend | `http://localhost:5173` |
+| `FRONTEND_PORT` | Публичный порт frontend в Docker Compose | `8080` |
 
-## 🛠 Технологии
+## Технологии
 
-- **Бэкенд**: Python 3.9+ / FastAPI / SQLite
-- **Фронтенд**: Vanilla JS / CSS (без фреймворков)
-- **AI**: Anthropic Claude Sonnet 4.6 (стриминг)
-- **Речь**: Web Speech API (браузерный)
+- Backend: Python / FastAPI / SQLite
+- Frontend: React / Vite / Tailwind
+- Production frontend: Nginx
+- AI: Groq или Anthropic
+- Speech-to-text: Deepgram browser WebSocket

@@ -4,6 +4,13 @@ set -e
 echo "🎙 ZoomScribe — Starting..."
 echo ""
 
+if [ -f .env ]; then
+  echo "🔧 Loading .env..."
+  set -a
+  . ./.env
+  set +a
+fi
+
 # Install Python deps
 echo "📦 Installing Python dependencies..."
 pip install -r backend/requirements.txt -q

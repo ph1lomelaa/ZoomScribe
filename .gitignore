@@ -1,0 +1,17 @@
+.env
+backend/.env
+frontend/.env
+
+node_modules/
+frontend/dist/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+backend/data/
+
+.DS_Store
+npm-debug.log*
