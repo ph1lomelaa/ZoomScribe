@@ -5,8 +5,8 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        navy: "#0F172A",
-        surface: "#F8FAFC",
+        navy: "#202023",
+        surface: "#F8F7F3",
       },
       fontFamily: {
         sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],

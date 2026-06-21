@@ -1,391 +1,332 @@
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getDeepgramToken } from "../api/client";
 
 const DEEPGRAM_WS = "wss://api.deepgram.com/v1/listen";
-const DEEPGRAM_KEY = import.meta.env.VITE_DEEPGRAM_API_KEY ?? "";
+const MAX_BUFFER_BYTES = 16000 * 2 * 5 * 60; // Five minutes of PCM during an outage.
+const MAX_RECONNECT_ATTEMPTS = 20;
 
 export type CaptureSource = "system" | "mic";
 
 interface Options {
-  onFinal: (text: string, speaker: string | null, timestamp: string) => void;
+  onFinal: (text: string, speaker: string | null, timestamp: string) => void | Promise<void>;
   onInterim: (text: string, speaker?: string | null) => void;
   onError: (msg: string) => void;
   onAudioLevel?: (level: number) => void;
   onAudioStatus?: (status: string) => void;
   onSourceStopped?: () => void;
+  /** Mobile browsers can suspend mic/tab-audio capture when the page is
+   * backgrounded (app switch, screen lock). Fired on every visibility
+   * change so the caller can warn the user as soon as they return. */
+  onVisibilityChange?: (hidden: boolean) => void;
 }
 
-interface DeepgramWord {
-  word: string;
-  speaker?: number;
-}
-
+interface DeepgramWord { word: string; speaker?: number }
 interface DeepgramResult {
   type: string;
   is_final: boolean;
-  speech_final: boolean;
   channel_index?: [number, number];
-  channel: {
-    alternatives: Array<{
-      transcript: string;
-      words: DeepgramWord[];
-    }>;
-  };
+  channel: { alternatives: Array<{ transcript: string; words: DeepgramWord[] }> };
 }
 
-function float32ToInt16(input: Float32Array): Int16Array {
+function float32ToInt16(input: Float32Array): ArrayBuffer {
   const out = new Int16Array(input.length);
   for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    const sample = Math.max(-1, Math.min(1, input[i]));
+    out[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
-  return out;
+  return out.buffer;
 }
 
-function rms(input: Float32Array): number {
+function rms(input: Float32Array) {
   let sum = 0;
   for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-  return Math.sqrt(sum / input.length);
+  return Math.sqrt(sum / Math.max(input.length, 1));
 }
 
 function dominantSpeaker(words: DeepgramWord[]): string | null {
   if (!words?.length) return null;
-  const counts: Record<number, number> = {};
-  for (const w of words) {
-    const s = w.speaker ?? 0;
-    counts[s] = (counts[s] || 0) + 1;
-  }
-  const top = Number(
-    Object.entries(counts).sort((a, b) => Number(b[1]) - Number(a[1]))[0][0]
-  );
-  return `Спикер ${top + 1}`;
+  const counts = new Map<number, number>();
+  words.forEach((word) => counts.set(word.speaker ?? 0, (counts.get(word.speaker ?? 0) || 0) + 1));
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return top === undefined ? null : `Спикер ${top + 1}`;
 }
 
-export const hasDeepgramKey = Boolean(DEEPGRAM_KEY);
+// The key now stays on the server. Kept for the existing microphone fallback API.
+export const hasDeepgramKey = true;
 
-export function useDeepgramTranscription({
-  onFinal,
-  onInterim,
-  onError,
-  onAudioLevel,
-  onAudioStatus,
-  onSourceStopped,
-}: Options) {
+export function useDeepgramTranscription(options: Options) {
+  const callbacksRef = useRef(options);
+  callbacksRef.current = options;
+
   const [isConnected, setIsConnected] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [captureSource, setCaptureSource] = useState<CaptureSource | null>(null);
 
+  const activeRef = useRef(false);
+  const manualStopRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
-  const activeRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const workletRef = useRef<AudioWorkletNode | null>(null);
+  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const openingRef = useRef(false);
+  const audioBufferRef = useRef<ArrayBuffer[]>([]);
+  const bufferedBytesRef = useRef(0);
 
-  const cleanup = useCallback(() => {
+  const clearSocketTimers = useCallback(() => {
+    if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    keepAliveRef.current = null;
+    reconnectTimerRef.current = null;
+  }, []);
+
+  const fullCleanup = useCallback(() => {
     activeRef.current = false;
-    setIsCapturing(false);
+    openingRef.current = false;
+    clearSocketTimers();
+    wsRef.current?.close();
+    wsRef.current = null;
+    workletRef.current?.disconnect();
+    workletRef.current = null;
+    audioCtxRef.current?.close().catch(() => undefined);
+    audioCtxRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    micStreamRef.current = null;
+    audioBufferRef.current = [];
+    bufferedBytesRef.current = 0;
     setIsConnected(false);
+    setIsCapturing(false);
     setCaptureSource(null);
-    onInterim("");
-    onAudioLevel?.(0);
-    onAudioStatus?.("");
+    callbacksRef.current.onInterim("");
+    callbacksRef.current.onAudioLevel?.(0);
+    callbacksRef.current.onAudioStatus?.("");
+  }, [clearSocketTimers]);
 
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
+  const queueOrSend = useCallback((buffer: ArrayBuffer) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(buffer);
+      return;
     }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
+    audioBufferRef.current.push(buffer);
+    bufferedBytesRef.current += buffer.byteLength;
+    while (bufferedBytesRef.current > MAX_BUFFER_BYTES && audioBufferRef.current.length) {
+      bufferedBytesRef.current -= audioBufferRef.current.shift()!.byteLength;
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop());
-      micStreamRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-  }, [onInterim]);
+  }, []);
 
-  const start = useCallback(
-    async (source: CaptureSource, deviceId?: string) => {
-      if (!DEEPGRAM_KEY) {
-        onError("Не задан VITE_DEEPGRAM_API_KEY в frontend/.env");
-        return;
-      }
-
-      // Safari doesn't support getDisplayMedia with audio
-      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-      if (source === "system" && isSafari) {
-        onError("__SAFARI__");
-        return;
-      }
-
-      cleanup();
-
-      let stream: MediaStream;
-      try {
-        if (source === "system") {
-          stream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: {
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false,
-            } as MediaTrackConstraints,
-          });
-
-          if (stream.getAudioTracks().length === 0) {
-            stream.getTracks().forEach((t) => t.stop());
-            onError("__NO_AUDIO__");
-            return;
-          }
-        } else {
-          const audioConstraints: MediaTrackConstraints = {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          };
-          if (deviceId) (audioConstraints as Record<string, unknown>).deviceId = { exact: deviceId };
-          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-        }
-      } catch (err) {
-        const name = (err as DOMException).name ?? "";
-        const msg  = (err as DOMException).message ?? "";
-        const isBusy =
-          name === "NotReadableError" ||
-          name === "TrackStartError" ||
-          msg.includes("Could not start") ||
-          msg.includes("in use") ||
-          msg.includes("busy");
-        const isDenied =
-          name === "NotAllowedError" ||
-          name === "PermissionDeniedError" ||
-          msg.includes("denied") ||
-          msg.includes("Permission");
-
-        if (source === "mic" && isBusy) {
-          // Mic is held by Zoom — guide user to system audio
-          onError("__MIC_BUSY__");
-        } else if (isDenied) {
-          onError(
-            source === "system"
-              ? "Доступ к экрану запрещён — разрешите захват в браузере."
-              : "Доступ к микрофону запрещён — разрешите в настройках браузера."
-          );
-        } else if (name === "NotFoundError") {
-          onError("Микрофон не найден — проверьте подключение.");
-        } else {
-          onError(`Ошибка захвата: ${name || msg}`);
-        }
-        return;
-      }
-
-      streamRef.current = stream;
-      const audioTrack = stream.getAudioTracks()[0];
-      onAudioStatus?.(
-        audioTrack
-          ? `track=${audioTrack.readyState}, muted=${audioTrack.muted ? "yes" : "no"}`
-          : "audio track отсутствует"
-      );
-
-      // Build Deepgram URL
+  const openSocketRef = useRef<() => Promise<void>>(async () => undefined);
+  openSocketRef.current = async () => {
+    if (!activeRef.current || openingRef.current) return;
+    openingRef.current = true;
+    callbacksRef.current.onAudioStatus?.(
+      reconnectAttemptRef.current ? `Переподключение ${reconnectAttemptRef.current}/${MAX_RECONNECT_ATTEMPTS}…` : "Подключение к распознаванию…"
+    );
+    try {
+      const { access_token } = await getDeepgramToken();
+      if (!activeRef.current) return;
       const params = new URLSearchParams({
-        model: "nova-3",
-        language: "multi",
-        punctuate: "true",
-        smart_format: "true",   // formats numbers, dates, currency automatically
-        interim_results: "true",
-        endpointing: "50",
-        encoding: "linear16",
-        sample_rate: "16000",
-        channels: "1",
-        utterance_end_ms: "1000",
-        filler_words: "false",  // strip "uh", "um", "э-э" etc.
-        diarize: "true",
+        model: "nova-3", language: "multi", punctuate: "true", smart_format: "true",
+        interim_results: "true", endpointing: "100", encoding: "linear16",
+        sample_rate: "16000", channels: "1", utterance_end_ms: "1000",
+        filler_words: "false", diarize: "true",
       });
-
-      // Browser WebSockets can't set headers — Deepgram accepts token as subprotocol
-      const ws = new WebSocket(`${DEEPGRAM_WS}?${params}`, ["token", DEEPGRAM_KEY]);
+      const ws = new WebSocket(`${DEEPGRAM_WS}?${params}`, ["bearer", access_token]);
+      ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
-      ws.binaryType = "arraybuffer";
-
       ws.onopen = () => {
+        if (!activeRef.current) { ws.close(); return; }
+        openingRef.current = false;
+        reconnectAttemptRef.current = 0;
         setIsConnected(true);
-        setIsCapturing(true);
-        setCaptureSource(source);
-        activeRef.current = true;
-
-        // Audio pipeline: MediaStream → AudioContext (16 kHz) → PCM Int16 chunks → WebSocket
-        const audioCtx = new AudioContext({ sampleRate: 16000 });
-        audioCtxRef.current = audioCtx;
-        audioCtx.resume().catch(() => {});
-
-        const processor = audioCtx.createScriptProcessor(4096, 2, 1);
-        processorRef.current = processor;
-
-        processor.onaudioprocess = (e) => {
-          if (!activeRef.current || ws.readyState !== WebSocket.OPEN) return;
-          for (let channel = 0; channel < e.outputBuffer.numberOfChannels; channel++) {
-            e.outputBuffer.getChannelData(channel).fill(0);
-          }
-          const left = e.inputBuffer.getChannelData(0);
-          const numChannels = e.inputBuffer.numberOfChannels;
-          let mixed: Float32Array;
-          if (numChannels >= 2) {
-            const right = e.inputBuffer.getChannelData(1);
-            mixed = new Float32Array(left.length);
-            for (let i = 0; i < left.length; i++) mixed[i] = (left[i] + right[i]) / 2;
-          } else {
-            mixed = left;
-          }
-
-          onAudioLevel?.(rms(mixed));
-          ws.send(float32ToInt16(mixed).buffer);
-        };
-
-        if (source === "system") {
-          const tabSource = audioCtx.createMediaStreamSource(stream);
-          const tabGain = audioCtx.createGain();
-          tabGain.gain.value = 2.5;
-          tabSource.connect(tabGain);
-          tabGain.connect(processor);
-
-          navigator.mediaDevices
-            .getUserMedia({
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              },
-            })
-            .then((micStream) => {
-              if (!activeRef.current || !audioCtxRef.current || !processorRef.current) {
-                micStream.getTracks().forEach((t) => t.stop());
-                return;
-              }
-              micStreamRef.current = micStream;
-              const micSource = audioCtxRef.current.createMediaStreamSource(micStream);
-              const micGain = audioCtxRef.current.createGain();
-              micGain.gain.value = 1.2;
-              micSource.connect(micGain);
-              micGain.connect(processorRef.current);
-              const micTrack = micStream.getAudioTracks()[0];
-              onAudioStatus?.(
-                `tab=${audioTrack?.readyState ?? "none"}, muted=${audioTrack?.muted ? "yes" : "no"}, mic=${micTrack ? "on" : "off"}`
-              );
-            })
-            .catch(() => {
-              onAudioStatus?.(
-                `tab=${audioTrack?.readyState ?? "none"}, muted=${audioTrack?.muted ? "yes" : "no"}, mic=off`
-              );
-            });
-        } else {
-          const micSource = audioCtx.createMediaStreamSource(stream);
-          const micGain = audioCtx.createGain();
-          micGain.gain.value = 1.0;
-          micSource.connect(micGain);
-          micGain.connect(processor);
-        }
-
-        // ScriptProcessor must be connected to a live destination in Chromium.
-        // Zero gain keeps the graph pulled without playing captured audio back.
-        const silentOutput = audioCtx.createGain();
-        silentOutput.gain.value = 0;
-        processor.connect(silentOutput);
-        silentOutput.connect(audioCtx.destination);
+        callbacksRef.current.onAudioStatus?.("Распознавание подключено · автопереподключение включено");
+        const buffered = audioBufferRef.current;
+        audioBufferRef.current = [];
+        bufferedBytesRef.current = 0;
+        buffered.forEach((chunk) => ws.readyState === WebSocket.OPEN && ws.send(chunk));
+        if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+        keepAliveRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "KeepAlive" }));
+        }, 4000);
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data as string) as DeepgramResult;
           if (data.type !== "Results") return;
-
-          const alt = data.channel?.alternatives?.[0];
-          if (!alt?.transcript?.trim()) return;
-
+          const alternative = data.channel?.alternatives?.[0];
+          if (!alternative?.transcript?.trim()) return;
+          // Both the tab and microphone are mixed into one mono stream, so speaker
+          // diarization is the reliable source. channel_index is always zero here.
+          const speaker = dominantSpeaker(alternative.words);
           if (data.is_final) {
-            const channelIndex = data.channel_index?.[0];
-            const speaker =
-              channelIndex === 0
-                ? "Студент"
-                : channelIndex === 1
-                ? "Менеджер"
-                : dominantSpeaker(alt.words);
-            onFinal(alt.transcript.trim(), speaker, new Date().toISOString());
-            onInterim("");
+            void callbacksRef.current.onFinal(alternative.transcript.trim(), speaker, new Date().toISOString());
+            callbacksRef.current.onInterim("");
           } else {
-            const channelIndex = data.channel_index?.[0];
-            const speaker =
-              channelIndex === 0
-                ? "Студент"
-                : channelIndex === 1
-                ? "Менеджер"
-                : null;
-            onInterim(alt.transcript, speaker);
+            callbacksRef.current.onInterim(alternative.transcript, speaker);
           }
-        } catch {
-          // ignore malformed frames
-        }
+        } catch { /* Ignore malformed provider frames. */ }
       };
 
-      ws.onerror = () => {
-        onError("Deepgram не принял соединение. Ждём код закрытия...");
-      };
-
-      ws.onclose = (e) => {
+      ws.onerror = () => callbacksRef.current.onAudioStatus?.("Сеть нестабильна · сохраняю аудио для переподключения");
+      ws.onclose = (event) => {
+        if (wsRef.current === ws) wsRef.current = null;
+        openingRef.current = false;
         setIsConnected(false);
-        if (activeRef.current) {
-          if (e.code === 1008) {
-            onError("Неверный API ключ Deepgram.");
-          } else if (e.code === 1011) {
-            onError("__NO_AUDIO__");
-          } else if (e.code !== 1000) {
-            onError(`Соединение прервано (${e.code}).`);
-          }
-          cleanup();
+        if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+        keepAliveRef.current = null;
+        if (!activeRef.current || manualStopRef.current) return;
+        reconnectAttemptRef.current += 1;
+        if (reconnectAttemptRef.current > MAX_RECONNECT_ATTEMPTS) {
+          callbacksRef.current.onError(`Не удалось восстановить распознавание (код ${event.code}). Аудиозахват остановлен.`);
+          fullCleanup();
+          return;
         }
+        const delay = Math.min(30000, 750 * 2 ** (reconnectAttemptRef.current - 1));
+        callbacksRef.current.onAudioStatus?.(`Соединение прервано · повтор через ${Math.ceil(delay / 1000)} сек`);
+        reconnectTimerRef.current = setTimeout(() => void openSocketRef.current(), delay);
+      };
+    } catch (error) {
+      openingRef.current = false;
+      if (!activeRef.current || manualStopRef.current) return;
+      reconnectAttemptRef.current += 1;
+      if (reconnectAttemptRef.current > MAX_RECONNECT_ATTEMPTS) {
+        callbacksRef.current.onError(
+          (error as Error).message || "Не удалось восстановить распознавание",
+        );
+        fullCleanup();
+        return;
+      }
+      const delay = Math.min(30_000, 750 * 2 ** (reconnectAttemptRef.current - 1));
+      callbacksRef.current.onAudioStatus?.(
+        `Сервис недоступен · повтор через ${Math.ceil(delay / 1000)} сек`,
+      );
+      reconnectTimerRef.current = setTimeout(() => void openSocketRef.current(), delay);
+    }
+  };
+
+  const start = useCallback(async (source: CaptureSource, deviceId?: string) => {
+    manualStopRef.current = true;
+    fullCleanup();
+    manualStopRef.current = false;
+
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    if (source === "system" && isSafari) {
+      callbacksRef.current.onError("__SAFARI__");
+      return;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = source === "system"
+        ? await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } as MediaTrackConstraints,
+          })
+        : await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+              ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+            },
+          });
+      if (!stream.getAudioTracks().length) {
+        stream.getTracks().forEach((track) => track.stop());
+        callbacksRef.current.onError("__NO_AUDIO__");
+        return;
+      }
+    } catch (error) {
+      const name = (error as DOMException).name;
+      if (name === "NotAllowedError") callbacksRef.current.onError("Доступ к звуку запрещён. Разрешите его в браузере.");
+      else if (name === "NotReadableError") callbacksRef.current.onError("__MIC_BUSY__");
+      else callbacksRef.current.onError(`Ошибка захвата: ${name || (error as Error).message}`);
+      return;
+    }
+
+    streamRef.current = stream;
+    activeRef.current = true;
+    setIsCapturing(true);
+    setCaptureSource(source);
+
+    try {
+      const audioCtx = new AudioContext({ sampleRate: 16000 });
+      audioCtxRef.current = audioCtx;
+      await audioCtx.audioWorklet.addModule("/pcm-processor.js");
+      const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
+      workletRef.current = worklet;
+      worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
+        callbacksRef.current.onAudioLevel?.(rms(event.data));
+        queueOrSend(float32ToInt16(event.data));
       };
 
-      // If the user stops sharing screen/tab, the track ends
-      stream.getAudioTracks().forEach((track) => {
-        track.addEventListener("mute", () => {
-          onAudioStatus?.(`track=${track.readyState}, muted=yes`);
-        });
-        track.addEventListener("unmute", () => {
-          onAudioStatus?.(`track=${track.readyState}, muted=no`);
-        });
-        track.addEventListener("ended", () => {
-          cleanup();
-          onSourceStopped?.();
-        });
-      });
-    },
-    [cleanup, onFinal, onInterim, onError, onAudioLevel, onAudioStatus, onSourceStopped]
-  );
+      const capturedSource = audioCtx.createMediaStreamSource(stream);
+      const capturedGain = audioCtx.createGain();
+      capturedGain.gain.value = source === "system" ? 2.2 : 1;
+      capturedSource.connect(capturedGain).connect(worklet);
 
-  const stop = useCallback(() => {
-    cleanup();
-  }, [cleanup]);
+      if (source === "system") {
+        try {
+          const mic = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          if (activeRef.current) {
+            micStreamRef.current = mic;
+            const micGain = audioCtx.createGain();
+            micGain.gain.value = 1.15;
+            audioCtx.createMediaStreamSource(mic).connect(micGain).connect(worklet);
+          } else mic.getTracks().forEach((track) => track.stop());
+        } catch {
+          callbacksRef.current.onAudioStatus?.("Системный звук включён · микрофон недоступен");
+        }
+      }
+
+      const silent = audioCtx.createGain();
+      silent.gain.value = 0;
+      worklet.connect(silent).connect(audioCtx.destination);
+      await audioCtx.resume();
+
+      stream.getTracks().forEach((track) => track.addEventListener("ended", () => {
+        if (!activeRef.current) return;
+        fullCleanup();
+        callbacksRef.current.onSourceStopped?.();
+      }));
+      void openSocketRef.current();
+    } catch (error) {
+      callbacksRef.current.onError(`Не удалось запустить аудиопроцессор: ${(error as Error).message}`);
+      fullCleanup();
+    }
+  }, [fullCleanup, queueOrSend]);
+
+  const stop = useCallback(async () => {
+    manualStopRef.current = true;
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "CloseStream" }));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    fullCleanup();
+  }, [fullCleanup]);
 
   useEffect(() => {
-    return () => {
-      activeRef.current = false;
-      cleanup();
+    const resume = () => {
+      const hidden = document.visibilityState === "hidden";
+      if (!hidden && audioCtxRef.current?.state === "suspended") {
+        audioCtxRef.current.resume().catch(() => undefined);
+      }
+      if (activeRef.current) callbacksRef.current.onVisibilityChange?.(hidden);
     };
-  }, [cleanup]);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      document.removeEventListener("visibilitychange", resume);
+      manualStopRef.current = true;
+      fullCleanup();
+    };
+  }, [fullCleanup]);
 
-  return {
-    isConnected,
-    isCapturing,
-    captureSource,
-    start,
-    stop,
-  };
+  return { isConnected, isCapturing, captureSource, start, stop };
 }

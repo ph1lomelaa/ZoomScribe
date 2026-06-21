@@ -48,7 +48,7 @@ cp .env.example .env
 nano .env
 ```
 
-Set at least `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, and `VITE_DEEPGRAM_API_KEY` if live transcription is required.
+Set at least `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, a unique `POSTGRES_PASSWORD`, and the Google OAuth variables if you want Google login.
 
 5. Start:
 
@@ -85,6 +85,11 @@ After adding a domain, update `.env`:
 
 ```bash
 CORS_ORIGINS=https://your-domain.com
+COOKIE_SECURE=true
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=https://your-domain.com/api/auth/google/callback
+FRONTEND_URL=https://your-domain.com
 ```
 
 Then rebuild/restart:
@@ -93,17 +98,34 @@ Then rebuild/restart:
 docker compose up -d --build
 ```
 
-## Backups
+## Scaling: Worker And Connection-Pool Sizing
 
-SQLite lives in the named Docker volume. To create a backup:
+Each backend container opens up to `WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW)` connections to Postgres (one pool per `uvicorn --workers` process). With the defaults (`WEB_CONCURRENCY=2`, `DB_POOL_SIZE=10`, `DB_MAX_OVERFLOW=20`), a single backend container can open up to **60** connections.
 
-```bash
-docker compose exec backend python -c "import shutil; shutil.copyfile('/app/data/scribe.db', '/app/data/scribe.backup.db')"
-docker cp "$(docker compose ps -q backend)":/app/data/scribe.backup.db ./scribe.backup.db
+Postgres' own default is `max_connections=100`. If you scale out by adding more backend replicas behind a load balancer (see `ARCHITECTURE.md`), keep this under control:
+
+```
+replicas × WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW) ≲ 0.8 × postgres max_connections
 ```
 
-To inspect the volume location:
+With the defaults above, that's already most of a stock `max_connections=100` Postgres from **one** replica — a second replica will exceed it. Before adding replicas, either:
+
+- lower `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` per replica (e.g. `DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=5` comfortably supports several replicas under the default limit), or
+- raise Postgres' `max_connections` (`docker compose exec postgres psql -U zoomscribe -c "ALTER SYSTEM SET max_connections = 300;"`, then restart the `postgres` service), or
+- put PgBouncer in front of Postgres and point `DATABASE_URL` at it, so replica × worker pools multiplex onto a small number of real server connections.
+
+## PostgreSQL Backups
+
+Create a logical backup:
 
 ```bash
-docker volume inspect zoomscribe_backend_data
+docker compose exec -T postgres pg_dump -U zoomscribe -d zoomscribe > zoomscribe.sql
 ```
+
+Restore into an empty database:
+
+```bash
+docker compose exec -T postgres psql -U zoomscribe -d zoomscribe < zoomscribe.sql
+```
+
+For production, schedule encrypted off-server backups and test restoration regularly.

@@ -1,125 +1,70 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { listSessions, deleteSession, createSession } from "../api/client";
-import type { SessionWithNote } from "../types";
+import { deleteSession, listSessions } from "../api/client";
 import SessionCard from "../components/SessionCard";
-import NewSessionModal from "../components/NewSessionModal";
+import { EmptyState, ErrorState, LoadingGrid } from "../components/AsyncState";
+import ManagerFilterDropdown from "../components/ManagerFilterDropdown";
+import { useManagerFilter } from "../hooks/useManagerFilter";
+import type { SessionWithNote } from "../types";
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionWithNote[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
+  const [error, setError] = useState("");
+  const { selectedManagerId, setSelectedManagerId, options } = useManagerFilter();
 
-  const loadSessions = useCallback(async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await listSessions();
-      setSessions(data);
+      setSessions(await listSessions(selectedManagerId));
     } catch (err) {
-      console.error(err);
+      setError((err as Error).message || "Не удалось загрузить созвоны");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedManagerId]);
 
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+  useEffect(() => { load(); }, [load]);
 
-  async function handleCreate(data: {
-    student_name: string;
-    manager_name: string;
-    country: string;
-    country_flag: string;
-    zoom_link: string;
-  }) {
-    const session = await createSession(data);
-    setShowModal(false);
-    navigate(`/session/${session.id}`);
-  }
-
-  async function handleDelete(id: number) {
-    if (!confirm("Удалить сессию? Это действие нельзя отменить.")) return;
+  async function remove(id: number) {
+    if (!confirm("Удалить созвон и его транскрипт? Это действие нельзя отменить.")) return;
     await deleteSession(id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
+    setSessions((current) => current.filter((item) => item.id !== id));
   }
 
   return (
-    <div className="min-h-screen bg-surface">
-      <nav className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <span className="font-bold text-lg text-slate-900">ZoomScribe</span>
-          <a
-            href="/notes"
-            onClick={(e) => { e.preventDefault(); navigate("/notes"); }}
-            className="text-sm text-slate-600 hover:text-indigo-600 font-medium transition"
-          >
-            Конспекты
-          </a>
+    <div className="page-wrap">
+      <section className="page-content">
+        <div>
+          <h1 className="page-title">Последние созвоны</h1>
+          <p className="page-subtitle max-w-2xl">Быстрый доступ к активным сессиям и готовым конспектам.</p>
         </div>
-      </nav>
-
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-        <div className="flex items-start justify-between mb-8">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Сессии</h1>
-            <p className="text-slate-500 text-sm mt-1">
-              {sessions.length > 0
-                ? `${sessions.length} сессий · AI-конспекты консультаций`
-                : "Начните свою первую сессию"}
-            </p>
-          </div>
-          <button
-            onClick={() => setShowModal(true)}
-            className="no-print flex items-center gap-2 bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-medium hover:bg-indigo-600 transition shadow-sm"
-          >
-            + Новая сессия
-          </button>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <ManagerFilterDropdown options={options} selectedManagerId={selectedManagerId} onChange={setSelectedManagerId} />
+          {sessions.length > 4 && <button onClick={() => navigate("/notes")} className="text-sm font-medium text-[#6548b4]">Все конспекты</button>}
         </div>
-
+        <div className="mt-4">
         {loading ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
-            {[1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="bg-white border border-slate-200 rounded-xl h-52 animate-pulse"
-              />
-            ))}
-          </div>
+          <LoadingGrid count={3} />
+        ) : error ? (
+          <ErrorState message={error} onRetry={load} />
         ) : sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <h2 className="text-xl font-semibold text-slate-700 mb-2">
-              Нет активных сессий
-            </h2>
-            <p className="text-slate-400 text-sm mb-6 max-w-xs">
-              Создайте новую сессию, чтобы начать конспектирование урока
-            </p>
-            <button
-              onClick={() => setShowModal(true)}
-              className="bg-indigo-500 text-white px-6 py-3 rounded-xl font-medium hover:bg-indigo-600 transition"
-            >
-              + Новая сессия
-            </button>
-          </div>
+          <EmptyState
+            title="Созвонов пока нет"
+            description="Создайте первую запись — транскрипт будет сохраняться по ходу разговора."
+            action={
+              <button onClick={() => navigate("/new")} className="btn-primary mt-5">Начать первый созвон</button>
+            }
+          />
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
-            {sessions.map((s) => (
-              <SessionCard key={s.id} session={s} onDelete={handleDelete} />
-            ))}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {sessions.slice(0, 6).map((session) => <SessionCard key={session.id} session={session} onDelete={remove} />)}
           </div>
         )}
-      </main>
-
-      <button
-        onClick={() => setShowModal(true)}
-        className="no-print fixed bottom-6 right-6 w-14 h-14 bg-indigo-500 text-white text-2xl rounded-full shadow-lg hover:bg-indigo-600 transition flex items-center justify-center sm:hidden"
-      >
-        +
-      </button>
-
-      {showModal && (
-        <NewSessionModal onClose={() => setShowModal(false)} onCreate={handleCreate} />
-      )}
+        </div>
+      </section>
     </div>
   );
 }

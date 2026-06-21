@@ -37,39 +37,40 @@ interface Props {
 export default function SessionCard({ session, onDelete }: Props) {
   const navigate = useNavigate();
   const isActive = session.status === "active";
+  const statusLabel = isActive ? "В процессе" : session.status === "abandoned" ? "Прерван" : "Завершён";
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
-      <div className="p-5 flex-1">
+    <div className="bg-white border border-[#deddd8] rounded-lg shadow-[0_8px_24px_rgba(32,32,35,.035)] hover:shadow-[0_12px_32px_rgba(32,32,35,.07)] transition-all duration-200 flex flex-col">
+      <div className="p-4 flex-1">
         <div className="flex items-start justify-between mb-3">
-          <div className="w-11 h-11 rounded-full bg-indigo-100 text-indigo-700 font-bold text-sm flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-full bg-[#eee9f8] text-[#6147a7] font-bold text-sm flex items-center justify-center shrink-0">
             {initials(session.student_name)}
           </div>
           <span
             className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${
               isActive
-                ? "bg-green-100 text-green-800"
-                : "bg-slate-100 text-slate-600"
+                ? "bg-[#eee9f8] text-[#6147a7]"
+                : "bg-[#f0efeb] text-[#6e6c66]"
             }`}
           >
             {isActive && (
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse-dot" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#8b67df] animate-pulse-dot" />
             )}
-            {isActive ? "В процессе" : "Завершён"}
+            {statusLabel}
           </span>
         </div>
 
-        <h3 className="font-semibold text-slate-900 text-base leading-tight">
+        <h3 className="font-serif font-normal text-[#202023] text-[1.2rem] leading-[1.05]">
           {session.student_name}
         </h3>
-        <p className="text-sm text-slate-500 mt-0.5">{session.manager_name}</p>
+        <p className="text-sm text-[#64625d] mt-0.5">{session.manager_name}</p>
 
-        <div className="flex items-center gap-1.5 mt-3 text-sm text-slate-600">
+        <div className="flex items-center gap-1.5 mt-3 text-sm text-[#5d5b56]">
           <span>{session.country_flag}</span>
           <span>{session.country}</span>
         </div>
 
-        <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+        <div className="flex items-center gap-3 mt-2 text-xs text-[#64625d]">
           <span>{formatDate(session.started_at)}</span>
           {session.duration_seconds > 0 && (
             <span>{formatDuration(session.duration_seconds)}</span>
@@ -77,39 +78,40 @@ export default function SessionCard({ session, onDelete }: Props) {
         </div>
 
         {(session.zoom_link || session.note_preview) && (
-          <p className="mt-3 text-xs text-slate-500 leading-relaxed line-clamp-2 bg-slate-50 rounded-lg p-2">
+          <p className="mt-3 text-xs text-[#6e6c66] leading-relaxed line-clamp-2 bg-[#f7f6f2] rounded-lg p-2">
             {session.zoom_link.trim() || session.note_preview}
           </p>
         )}
       </div>
 
-      <div className="px-5 pb-4 flex items-center gap-2 border-t border-slate-50 pt-3">
+      <div className="px-4 pb-4 flex items-center gap-2 border-t border-[#efede8] pt-3">
         {isActive ? (
           <button
             onClick={() => navigate(`/session/${session.id}`)}
-            className="flex-1 bg-indigo-500 text-white text-sm font-medium rounded-lg py-2 hover:bg-indigo-600 transition"
+            className="flex-1 min-h-11 bg-[#242426] text-white text-sm font-medium rounded-full px-4 hover:bg-black transition"
           >
             Продолжить
           </button>
         ) : session.note_id ? (
           <button
             onClick={() => navigate(`/notes/${session.note_id}`)}
-            className="flex-1 bg-indigo-500 text-white text-sm font-medium rounded-lg py-2 hover:bg-indigo-600 transition"
+            className="flex-1 min-h-11 bg-[#242426] text-white text-sm font-medium rounded-full px-4 hover:bg-black transition"
           >
             Конспект
           </button>
         ) : (
           <button
             onClick={() => navigate(`/session/${session.id}`)}
-            className="flex-1 border border-slate-200 text-slate-700 text-sm font-medium rounded-lg py-2 hover:bg-slate-50 transition"
+            className="flex-1 min-h-11 border border-[#d9d7d1] text-[#363638] text-sm font-medium rounded-full px-4 hover:bg-[#f2f0eb] transition"
           >
             Открыть
           </button>
         )}
         <button
           onClick={() => onDelete(session.id)}
-          className="w-9 h-9 flex items-center justify-center rounded-lg border border-red-100 text-red-400 hover:bg-red-50 hover:text-red-600 transition"
+          className="w-11 h-11 shrink-0 flex items-center justify-center rounded-full border border-[#e6d9d6] text-[#a76b62] hover:bg-[#fbf0ee] transition"
           title="Удалить"
+          aria-label="Удалить созвон"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="3 6 5 6 21 6"/>

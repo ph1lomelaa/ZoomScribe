@@ -5,12 +5,56 @@
 @layer base {
   body {
     font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
-    background-color: #F8FAFC;
-    color: #0F172A;
+    background-color: #F8F7F3;
+    color: #202023;
+    min-width: 320px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * { box-sizing: border-box; }
+
+  button, a { -webkit-tap-highlight-color: transparent; }
+
+  button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
   }
 }
 
 @layer components {
+  .page-wrap {
+    @apply w-full px-4 py-6 sm:px-7 sm:py-8 xl:px-10 xl:py-10;
+  }
+  .page-content {
+    @apply w-full max-w-6xl mx-auto;
+  }
+  .page-content-narrow {
+    @apply w-full max-w-4xl mx-auto;
+  }
+  .page-title {
+    @apply text-3xl sm:text-4xl font-normal tracking-normal text-[#202023];
+    font-family: Georgia, 'Times New Roman', serif;
+  }
+  .page-subtitle {
+    @apply mt-2 text-sm sm:text-base text-[#6e6c66];
+  }
+  .eyebrow {
+    @apply mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#7859c7];
+  }
+  .card {
+    @apply bg-white border border-[#deddd8] rounded-lg shadow-[0_1px_2px_rgba(32,32,35,0.03),0_10px_30px_rgba(32,32,35,0.035)];
+  }
+  .field {
+    @apply block w-full rounded-lg border border-[#d9d7d1] bg-[#fbfaf7] px-3.5 py-3 text-sm text-[#202023] outline-none transition placeholder:text-[#73716b] focus:border-[#8b67df] focus:ring-4 focus:ring-[#8b67df]/10;
+  }
+  .btn-primary {
+    @apply inline-flex min-h-11 items-center justify-center rounded-full bg-[#242426] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply inline-flex min-h-11 items-center justify-center rounded-full border border-[#d9d7d1] bg-white px-5 py-2.5 text-sm font-medium text-[#363638] transition hover:bg-[#f2f0eb] disabled:opacity-50;
+  }
+
   /* Markdown prose styles used in AiSidebar and NoteDetail */
   .prose-custom .md-h1 {
     @apply text-lg font-bold text-slate-900 mt-5 mb-2 pb-1 border-l-4 border-indigo-400 pl-3;
@@ -52,6 +96,24 @@
   .prose-custom em {
     @apply italic text-slate-600;
   }
+}
+
+.workspace-paper {
+  background-color: #f8f7f3;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 55px,
+    rgba(43, 42, 39, 0.035) 56px
+  );
+}
+
+@media print {
+  aside, header, nav, .no-print { display: none !important; }
+  main { padding-left: 0 !important; }
+  .no-print-padding { padding: 0 !important; }
+  body { background: white !important; }
+  .card { box-shadow: none !important; border-color: #e2e8f0 !important; }
 }
 
 @layer utilities {

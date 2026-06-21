@@ -12,6 +12,10 @@ interface Props {
   onStartMic: (deviceId?: string) => void;
   onStop: () => void;
   error: string;
+  /** True right after the tab/app came back from being backgrounded while
+   * capturing — mobile OSes can suspend mic/tab-audio capture in the
+   * background, so this prompts the user to verify recording continued. */
+  returnedFromBackground?: boolean;
 }
 
 function isZoomDevice(label: string) {
@@ -30,6 +34,7 @@ export default function RecordingCard({
   onStartMic,
   onStop,
   error,
+  returnedFromBackground,
 }: Props) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -55,11 +60,11 @@ export default function RecordingCard({
   const audioPercent = Math.min(100, Math.round(audioLevel * 500));
 
   return (
-    <div className="flex flex-col h-full bg-white border border-slate-200 rounded-xl overflow-hidden">
-      <div className="flex-1 flex flex-col items-center justify-center px-8 py-10 text-center">
+    <div className="flex flex-col h-full bg-white border border-[#deddd8] rounded-lg overflow-hidden">
+      <div className="flex-1 flex flex-col items-center justify-center px-5 py-7 text-center overflow-y-auto">
 
         {/* Indicator */}
-        <div className="relative mb-8">
+        <div className="relative mb-5">
           <div className={`w-24 h-24 rounded-full flex items-center justify-center transition-colors duration-300 ${
             isCapturing ? "bg-red-50 border-2 border-red-200" : "bg-slate-50 border-2 border-slate-200"
           }`}>
@@ -80,16 +85,35 @@ export default function RecordingCard({
             <p className="text-lg font-semibold text-slate-800 mb-1">
               {isConnected ? "Идёт запись" : "Подключение..."}
             </p>
-            <p className="text-sm text-slate-400 mb-6">
+            <p className="text-sm text-slate-600 mb-5">
               {isConnected
                 ? `${sourceLabel} · ${segmentCount} фрагм. сохранено`
                 : "Соединяемся с сервером распознавания..."}
             </p>
+
+            {/* Proactive, always-visible reminder while recording — mobile
+                browsers can suspend audio capture once the tab/app is
+                backgrounded, so this warns the user upfront rather than
+                only after the fact. */}
+            <div className="w-full max-w-xs mb-4 px-3 py-2 rounded-lg bg-amber-50 border border-amber-100 text-left">
+              <p className="text-xs text-amber-700 leading-relaxed">
+                Не блокируйте экран и не закрывайте вкладку — на телефоне запись звука может прерваться в фоне.
+              </p>
+            </div>
+
+            {returnedFromBackground && (
+              <div className="w-full max-w-xs mb-4 px-3 py-2 rounded-lg bg-red-50 border border-red-100 text-left">
+                <p className="text-xs text-red-600 leading-relaxed">
+                  Вкладка была свёрнута. Проверьте индикатор записи ниже — если звук не идёт, начните захват заново.
+                </p>
+              </div>
+            )}
+
             {isConnected && (
               <div className="w-full max-w-xs mb-5 text-left">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-slate-400">Входящий звук</span>
-                  <span className="text-xs font-mono text-slate-400">{audioPercent}%</span>
+                  <span className="text-xs text-slate-600">Входящий звук</span>
+                  <span className="text-xs font-mono text-slate-600">{audioPercent}%</span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                   <div
@@ -105,7 +129,7 @@ export default function RecordingCard({
                   </p>
                 )}
                 {audioStatus && (
-                  <p className="text-xs text-slate-400 mt-1 font-mono">
+                  <p className="text-xs text-slate-600 mt-1 font-mono">
                     {audioStatus}
                   </p>
                 )}
@@ -115,7 +139,7 @@ export default function RecordingCard({
         ) : (
           <>
             <p className="text-lg font-semibold text-slate-800 mb-1">Запись не ведётся</p>
-            <p className="text-sm text-slate-400 mb-6">
+            <p className="text-sm text-slate-600 mb-5">
               {segmentCount > 0
                 ? `${segmentCount} фрагментов сохранено`
                 : "Нажмите кнопку ниже чтобы начать"}
@@ -139,11 +163,11 @@ export default function RecordingCard({
                 <>
                   <button
                     onClick={onStartCapture}
-                    className="w-full py-3 rounded-xl bg-indigo-500 text-white font-medium hover:bg-indigo-600 transition text-sm"
+                    className="w-full py-3 rounded-full bg-[#242426] text-white font-medium hover:bg-black transition text-sm"
                   >
                     Выбрать вкладку Zoom / Teams
                   </button>
-                  <p className="text-xs text-slate-400 leading-relaxed text-center -mt-1">
+                  <p className="text-xs text-slate-600 leading-relaxed text-center -mt-1">
                     Chrome покажет список вкладок — выберите нужную и включите
                     «Поделиться звуком вкладки»
                   </p>
@@ -153,9 +177,9 @@ export default function RecordingCard({
               {/* Secondary: mic */}
               <button
                 onClick={() => setShowMicOptions((v) => !v)}
-                className="w-full py-2.5 rounded-xl border border-slate-200 text-slate-500 text-xs hover:bg-slate-50 transition"
+                className="w-full min-h-11 inline-flex items-center justify-center rounded-full border border-[#d9d7d1] text-[#6e6c66] text-xs hover:bg-[#f2f0eb] transition"
               >
-                {showMicOptions ? "Скрыть" : "Использовать микрофон вместо этого"}
+                {showMicOptions ? "Скрыть настройки" : "Использовать микрофон"}
               </button>
 
               {showMicOptions && (
@@ -178,7 +202,7 @@ export default function RecordingCard({
                   )}
                   <button
                     onClick={() => onStartMic(selectedId || undefined)}
-                    className="w-full py-2.5 rounded-xl bg-slate-700 text-white text-sm font-medium hover:bg-slate-800 transition"
+                    className="w-full min-h-11 inline-flex items-center justify-center rounded-full bg-[#242426] text-white text-sm font-medium hover:bg-black transition"
                   >
                     Начать запись с микрофона
                   </button>
@@ -190,7 +214,7 @@ export default function RecordingCard({
             </>
           )}
 
-          <p className="text-xs text-slate-400 leading-relaxed">
+          <p className="text-xs text-slate-600 leading-relaxed">
             Распознавание: русский, английский и смешанная речь автоматически
           </p>
 

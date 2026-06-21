@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getSession, endSession, addTranscript, generateNote } from "../api/client";
+import {
+  addTranscript, endSession, generateLiveSummary, generateNote, getSession, heartbeat,
+} from "../api/client";
 import type { SessionDetail, Transcript } from "../types";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useDeepgramTranscription, hasDeepgramKey } from "../hooks/useDeepgramTranscription";
@@ -8,7 +10,13 @@ import { useTimer } from "../hooks/useTimer";
 import RecordingCard from "../components/RecordingCard";
 import TranscriptPanel from "../components/TranscriptPanel";
 import AiSidebar from "../components/AiSidebar";
+import { ErrorState } from "../components/AsyncState";
 import { renderMarkdown } from "../utils/markdown";
+import { readTextStream } from "../utils/readStream";
+import {
+  createClientSegmentId, enqueueTranscript, readTranscriptOutbox,
+  removeTranscriptFromOutbox, type PendingTranscript,
+} from "../utils/transcriptOutbox";
 
 const AUTO_SUMMARY_INTERVAL_MS = 2 * 60 * 1000;
 const AUTO_SUMMARY_MIN_SEGMENTS = 5;
@@ -29,6 +37,10 @@ export default function SessionPage() {
   const [isAiStreaming, setIsAiStreaming] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [finalNoteText, setFinalNoteText] = useState("");
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [aiSheetOpen, setAiSheetOpen] = useState(false);
+  const [returnedFromBackground, setReturnedFromBackground] = useState(false);
 
   const timer = useTimer();
   const lastSummaryIndexRef = useRef(0);
@@ -37,6 +49,8 @@ export default function SessionPage() {
   const interimTextRef = useRef("");
   const interimSpeakerRef = useRef<string | null>(null);
   const savingInterimRef = useRef(false);
+  const sequenceRef = useRef(0);
+  const flushPromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     transcriptsRef.current = transcripts;
@@ -52,20 +66,82 @@ export default function SessionPage() {
 
   // ── Shared callbacks ────────────────────────────────────────────────────────
 
+  const flushOutbox = useCallback((): Promise<void> => {
+    if (flushPromiseRef.current) return flushPromiseRef.current;
+    const task = (async () => {
+      const queued = readTranscriptOutbox(sessionId);
+      setPendingCount(queued.length);
+      for (const item of queued) {
+        try {
+          const saved = await addTranscript(
+            sessionId,
+            item.text,
+            item.timestamp,
+            item.speaker ?? undefined,
+            item.clientSegmentId,
+            item.sequenceNo,
+          );
+          removeTranscriptFromOutbox(sessionId, item.clientSegmentId);
+          setTranscripts((current) => {
+            const index = current.findIndex(
+              (entry) => entry.client_segment_id === item.clientSegmentId,
+            );
+            const next = index >= 0
+              ? current.map((entry, position) => position === index ? saved : entry)
+              : [...current, saved];
+            return next.sort(
+              (a, b) => (a.sequence_no ?? a.id) - (b.sequence_no ?? b.id),
+            );
+          });
+          setSyncStatus("");
+          setPendingCount(readTranscriptOutbox(sessionId).length);
+        } catch (err) {
+          console.error("Transcript sync error:", err);
+          setSyncStatus("Нет связи с сервером · текст сохранён на этом устройстве");
+          break;
+        }
+      }
+    })();
+    flushPromiseRef.current = task;
+    void task.finally(() => {
+      if (flushPromiseRef.current === task) flushPromiseRef.current = null;
+    });
+    return task;
+  }, [sessionId]);
+
   const handleFinalResult = useCallback(
     async (text: string, speaker: string | null, timestamp: string) => {
+      const item: PendingTranscript = {
+        clientSegmentId: createClientSegmentId(sessionId),
+        text: text.trim(),
+        timestamp,
+        speaker,
+        sequenceNo: sequenceRef.current++,
+      };
+      enqueueTranscript(sessionId, item);
+      setPendingCount(readTranscriptOutbox(sessionId).length);
+      const optimistic: Transcript = {
+        id: -(item.sequenceNo + 1),
+        session_id: sessionId,
+        text: item.text,
+        timestamp: item.timestamp,
+        speaker: item.speaker,
+        client_segment_id: item.clientSegmentId,
+        sequence_no: item.sequenceNo,
+      };
+      setTranscripts((current) => current.some(
+        (entry) => entry.client_segment_id === item.clientSegmentId,
+      ) ? current : [...current, optimistic]);
       try {
-        const saved = await addTranscript(sessionId, text, timestamp, speaker ?? undefined);
-        setTranscripts((prev) => [...prev, saved]);
-      } catch (err) {
-        console.error("Transcript save error:", err);
-        setError("Текст распознан, но не сохранился в базе. Проверьте backend.");
-      }
+        await flushOutbox();
+      } catch { /* The durable outbox retries automatically. */ }
     },
-    [sessionId]
+    [flushOutbox, sessionId]
   );
 
   const handleInterim = useCallback((text: string, speaker?: string | null) => {
+    interimTextRef.current = text;
+    interimSpeakerRef.current = speaker ?? null;
     setInterimText(text);
     setInterimSpeaker(speaker ?? null);
   }, []);
@@ -77,26 +153,19 @@ export default function SessionPage() {
 
     savingInterimRef.current = true;
     try {
-      const saved = await addTranscript(
-        sessionId,
+      await handleFinalResult(
         text,
+        interimSpeakerRef.current,
         new Date().toISOString(),
-        interimSpeakerRef.current ?? undefined
       );
-      const next = [...transcriptsRef.current, saved];
-      transcriptsRef.current = next;
-      setTranscripts(next);
       setInterimText("");
       setInterimSpeaker(null);
       interimTextRef.current = "";
       interimSpeakerRef.current = null;
-    } catch (err) {
-      console.error("Interim save error:", err);
-      setError("Последняя фраза распознана, но не сохранилась в базе.");
     } finally {
       savingInterimRef.current = false;
     }
-  }, [sessionId]);
+  }, [handleFinalResult]);
 
   // ── Deepgram hook (system audio or mic via Deepgram) ───────────────────────
   const deepgram = useDeepgramTranscription({
@@ -105,7 +174,14 @@ export default function SessionPage() {
     onError: handleError,
     onAudioLevel: setAudioLevel,
     onAudioStatus: setAudioStatus,
-    onSourceStopped: () => setError("Захват звука остановлен."),
+    onSourceStopped: () => {
+      void savePendingInterim();
+      setError("Захват звука остановлен. Сохранённый текст не потерян.");
+    },
+    onVisibilityChange: (hidden) => {
+      if (hidden) setReturnedFromBackground(false);
+      else setReturnedFromBackground(true);
+    },
   });
 
   // ── Web Speech API hook (mic fallback when no Deepgram key) ────────────────
@@ -126,32 +202,39 @@ export default function SessionPage() {
   const isConnected = deepgram.isConnected;
   const captureSource = deepgram.captureSource;
 
-  function handleStartCapture() {
+  async function handleStartCapture() {
     setError("");
     setAudioLevel(0);
     setAudioStatus("");
-    deepgram.stop();
+    await deepgram.stop();
     speech.stop();
-    deepgram.start("system");
+    await deepgram.start("system");
   }
 
-  function handleStartMic(deviceId?: string) {
+  async function handleStartMic(deviceId?: string) {
     setError("");
     setAudioLevel(0);
     setAudioStatus("");
-    deepgram.stop();
+    await deepgram.stop();
     speech.stop();
     if (hasDeepgramKey) {
-      deepgram.start("mic", deviceId);
+      await deepgram.start("mic", deviceId);
     } else {
       speech.start();
     }
   }
 
+  async function stopAndFlush() {
+    if (deepgram.isCapturing) await deepgram.stop();
+    if (speech.isRecording) {
+      await savePendingInterim();
+      speech.stop();
+    }
+    await flushOutbox();
+  }
+
   async function handleStop() {
-    await savePendingInterim();
-    deepgram.stop();
-    speech.stop();
+    await stopAndFlush();
     setAudioLevel(0);
     setAudioStatus("");
   }
@@ -159,11 +242,35 @@ export default function SessionPage() {
   // ── Load session ────────────────────────────────────────────────────────────
   useEffect(() => {
     getSession(sessionId).then((data) => {
+      const pending = readTranscriptOutbox(sessionId);
+      const serverIds = new Set((data.transcripts || []).map((item) => item.client_segment_id));
+      const optimistic = pending
+        .filter((item) => !serverIds.has(item.clientSegmentId))
+        .map((item): Transcript => ({
+          id: -(item.sequenceNo + 1), session_id: sessionId, text: item.text,
+          timestamp: item.timestamp, speaker: item.speaker,
+          client_segment_id: item.clientSegmentId, sequence_no: item.sequenceNo,
+        }));
+      const merged = [...(data.transcripts || []), ...optimistic].sort(
+        (a, b) => (a.sequence_no ?? a.id) - (b.sequence_no ?? b.id),
+      );
+      sequenceRef.current = Math.max(
+        0,
+        ...merged.map((item) => (item.sequence_no ?? -1) + 1),
+      );
       setSession(data);
-      setTranscripts(data.transcripts || []);
+      setTranscripts(merged);
+      setPendingCount(pending.length);
       if (data.note) setAiSummary(data.note.summary_markdown);
-      if (data.status === "active") timer.start();
-    });
+      if (data.status === "active") {
+        const elapsed = Math.max(
+          data.duration_seconds || 0,
+          Math.floor((Date.now() - new Date(data.started_at).getTime()) / 1000),
+        );
+        timer.start(Number.isFinite(elapsed) ? elapsed : 0);
+      }
+      void flushOutbox();
+    }).catch((err) => setError((err as Error).message));
     return () => {
       timer.stop();
       deepgram.stop();
@@ -171,6 +278,56 @@ export default function SessionPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  useEffect(() => {
+    const retry = () => void flushOutbox();
+    window.addEventListener("online", retry);
+    const interval = window.setInterval(retry, 5000);
+    return () => {
+      window.removeEventListener("online", retry);
+      window.clearInterval(interval);
+    };
+  }, [flushOutbox]);
+
+  // Instant offline/online feedback — without this, the existing
+  // sync-status banner only appears once the next periodic flush attempt
+  // fails (up to 5s later), instead of the moment connectivity actually drops.
+  useEffect(() => {
+    const goOffline = () => setSyncStatus("Нет подключения к интернету · текст сохраняется локально");
+    const goOnline = () => void flushOutbox();
+    window.addEventListener("offline", goOffline);
+    window.addEventListener("online", goOnline);
+    return () => {
+      window.removeEventListener("offline", goOffline);
+      window.removeEventListener("online", goOnline);
+    };
+  }, [flushOutbox]);
+
+  // Auto-dismiss the "tab was backgrounded" notice so it doesn't linger for
+  // the rest of the call once the user has seen it.
+  useEffect(() => {
+    if (!returnedFromBackground) return;
+    const timeout = window.setTimeout(() => setReturnedFromBackground(false), 8000);
+    return () => window.clearTimeout(timeout);
+  }, [returnedFromBackground]);
+
+  useEffect(() => {
+    if (!session || session.status !== "active") return;
+    const send = () => heartbeat(sessionId).catch(() => undefined);
+    send();
+    const interval = window.setInterval(send, 20_000);
+    return () => window.clearInterval(interval);
+  }, [session, sessionId]);
+
+  useEffect(() => {
+    const warnBeforeClose = (event: BeforeUnloadEvent) => {
+      if (!isCapturing) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeClose);
+    return () => window.removeEventListener("beforeunload", warnBeforeClose);
+  }, [isCapturing]);
 
   // ── Auto AI summary every 2 min ─────────────────────────────────────────────
   useEffect(() => {
@@ -186,22 +343,10 @@ export default function SessionPage() {
       ) {
         lastSummaryIndexRef.current = current.length;
         lastSummaryTimeRef.current = Date.now();
-        const recentText = current.slice(-newSince).map((t) => t.text).join("\n");
-
         setIsAiStreaming(true);
         try {
-          const response = await generateNote(sessionId, recentText);
-          if (response.body) {
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let summary = "";
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              summary += decoder.decode(value, { stream: true });
-              setAiSummary(summary);
-            }
-          }
+          const response = await generateLiveSummary(sessionId);
+          await readTextStream(response, setAiSummary);
         } catch (err) {
           console.error("Auto-summary error:", err);
         } finally {
@@ -217,52 +362,44 @@ export default function SessionPage() {
     if (transcripts.length === 0 && !confirm("Завершить сессию без транскрипта?")) return;
     if (transcripts.length > 0 && !confirm("Завершить сессию и сгенерировать конспект?")) return;
 
-    await savePendingInterim();
-    deepgram.stop();
-    speech.stop();
-    timer.stop();
+    await stopAndFlush();
+    if (readTranscriptOutbox(sessionId).length > 0) {
+      setError("Не удалось отправить все фрагменты. Проверьте сеть и повторите завершение.");
+      return;
+    }
+    const durationSeconds = timer.stop();
     setFinishing(true);
 
-    await endSession(sessionId, timer.elapsedSeconds);
-
-    const currentTranscripts = transcriptsRef.current;
-    const fullTranscript = currentTranscripts.map((t) => {
-      const prefix = t.speaker ? `[${t.speaker}]: ` : "";
-      return `${prefix}${t.text}`;
-    }).join("\n");
-
     try {
-      const response = await generateNote(sessionId, fullTranscript);
-      if (!response.body) throw new Error("No stream body");
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let noteText = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        noteText += decoder.decode(value, { stream: true });
-        setFinalNoteText(noteText);
-      }
+      await endSession(sessionId, durationSeconds);
+      const response = await generateNote(sessionId);
+      await readTextStream(response, setFinalNoteText);
 
       const updated = await getSession(sessionId);
       if (updated.note) navigate(`/notes/${updated.note.id}`);
       else navigate("/");
     } catch (err) {
       console.error(err);
+      setError((err as Error).message || "Не удалось завершить созвон");
       setFinishing(false);
     }
   }
 
-  function handleBack() {
+  async function handleBack() {
     if (transcripts.length > 0 && !confirm("Выйти? Прогресс сессии сохранён в базе.")) return;
-    deepgram.stop();
-    speech.stop();
+    await stopAndFlush();
     timer.stop();
     navigate("/");
   }
 
   if (!session) {
+    if (error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-surface px-4">
+          <ErrorState message={error} onRetry={() => window.location.reload()} />
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface">
         <div className="w-8 h-8 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin" />
@@ -271,13 +408,14 @@ export default function SessionPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-surface">
+    <div className="min-h-[calc(100dvh-4rem)] md:min-h-screen flex flex-col bg-surface">
       {/* Top bar */}
-      <div className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
+      <div className="sticky top-16 md:top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
           <button
             onClick={handleBack}
-            className="no-print w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-600 transition"
+            aria-label="Назад к списку созвонов"
+            className="no-print shrink-0 w-11 h-11 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-600 transition"
           >
             ←
           </button>
@@ -285,36 +423,37 @@ export default function SessionPage() {
           <div className="flex items-center gap-2 flex-1 min-w-0">
             <span className="text-base">{session.country_flag}</span>
             <span className="font-semibold text-slate-900 truncate">{session.student_name}</span>
-            <span className="text-slate-400 text-sm hidden sm:block">·</span>
+            <span className="text-slate-500 text-sm hidden sm:block">·</span>
             <span className="text-slate-500 text-sm hidden sm:block truncate">{session.manager_name}</span>
           </div>
 
           {session.zoom_link && (
             <span
-              className="hidden lg:block max-w-xs truncate text-xs text-slate-400"
+              className="hidden xl:block max-w-xs truncate text-xs text-slate-600"
               title={session.zoom_link}
             >
               {session.zoom_link}
             </span>
           )}
 
-          <span className="font-mono text-lg font-semibold text-slate-700 tabular-nums">
+          <span className="shrink-0 font-mono text-lg font-semibold text-slate-700 tabular-nums">
             {timer.formatted}
           </span>
 
           <button
             onClick={handleFinish}
             disabled={finishing}
-            className="no-print flex items-center gap-1.5 bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition disabled:opacity-60"
+            className="no-print shrink-0 whitespace-nowrap min-h-11 inline-flex items-center justify-center gap-1.5 bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-600 transition disabled:opacity-60"
           >
             Завершить
           </button>
         </div>
       </div>
 
-      {/* Two-column layout */}
-      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 grid grid-cols-1 lg:grid-cols-[18rem_minmax(0,1fr)_20rem] gap-4 min-h-0">
-        <div className="min-h-[22rem] lg:min-h-0" style={{ height: "calc(100vh - 7rem)" }}>
+      {/* Two-column layout. Bottom padding on <lg makes room for the fixed
+          AI summary sheet's collapsed handle bar (see AiSidebar). */}
+      <div className="flex-1 lg:flex-none max-w-[1400px] mx-auto w-full px-4 sm:px-6 py-4 pb-20 lg:pb-4 grid grid-cols-1 lg:grid-cols-[17rem_minmax(0,1fr)_19rem] gap-4 lg:h-[min(48rem,calc(100dvh-5.5rem))] lg:min-h-[34rem]">
+        <div className="h-[32rem] lg:h-full min-h-0">
           <RecordingCard
             isCapturing={isCapturing}
             isConnected={isConnected}
@@ -326,9 +465,10 @@ export default function SessionPage() {
             onStartMic={handleStartMic}
             onStop={handleStop}
             error={error}
+            returnedFromBackground={returnedFromBackground}
           />
         </div>
-        <div className="min-h-[24rem] lg:min-h-0" style={{ height: "calc(100vh - 7rem)" }}>
+        <div className="h-[34rem] lg:h-full min-h-0">
           <TranscriptPanel
             transcripts={transcripts}
             interimText={interimText}
@@ -336,10 +476,20 @@ export default function SessionPage() {
             isConnected={isConnected}
             captureSource={captureSource}
             error={error}
+            pendingCount={pendingCount}
+            syncStatus={syncStatus}
           />
         </div>
-        <div className="min-h-[20rem] lg:min-h-0" style={{ height: "calc(100vh - 7rem)" }}>
-          <AiSidebar summaryHtml={aiSummary} isStreaming={isAiStreaming} />
+        {/* On <lg this wrapper carries no height of its own — AiSidebar is
+            position:fixed there (bottom sheet) and ignores its parent's box.
+            On lg+ it reverts to a normal grid column at the original height. */}
+        <div className="h-0 lg:h-full lg:min-h-0">
+          <AiSidebar
+            summaryHtml={aiSummary}
+            isStreaming={isAiStreaming}
+            isOpen={aiSheetOpen}
+            onToggleOpen={() => setAiSheetOpen((v) => !v)}
+          />
         </div>
       </div>
 

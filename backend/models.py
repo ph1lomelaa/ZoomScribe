@@ -1,13 +1,41 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+class Manager(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    role: str = "manager"
+
+
+class AdminManager(Manager):
+    created_at: str
+    google_linked: bool = False
+    session_count: int = 0
+
+
+class ManagerRoleUpdate(BaseModel):
+    role: Literal["manager", "admin"]
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    full_name: str = Field(min_length=2, max_length=160)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class SessionCreate(BaseModel):
-    student_name: str
-    manager_name: str
-    country: str
-    country_flag: str = ""
-    zoom_link: str = ""
+    student_name: str = Field(min_length=1, max_length=200)
+    country: str = Field(min_length=1, max_length=120)
+    country_flag: str = Field(default="", max_length=16)
+    zoom_link: str = Field(default="", max_length=2000)
 
 
 class Session(BaseModel):
@@ -21,10 +49,11 @@ class Session(BaseModel):
     ended_at: Optional[str] = None
     duration_seconds: int
     status: str
+    last_heartbeat_at: Optional[str] = None
 
 
 class SessionEndRequest(BaseModel):
-    duration_seconds: int
+    duration_seconds: int = Field(ge=0, le=24 * 60 * 60)
 
 
 class Transcript(BaseModel):
@@ -33,12 +62,16 @@ class Transcript(BaseModel):
     text: str
     timestamp: str
     speaker: Optional[str] = None
+    client_segment_id: Optional[str] = None
+    sequence_no: Optional[int] = None
 
 
 class TranscriptCreate(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=10000)
     timestamp: Optional[str] = None
-    speaker: Optional[str] = None
+    speaker: Optional[str] = Field(default=None, max_length=100)
+    client_segment_id: Optional[str] = Field(default=None, max_length=64)
+    sequence_no: Optional[int] = Field(default=None, ge=0)
 
 
 class Note(BaseModel):
@@ -46,11 +79,6 @@ class Note(BaseModel):
     session_id: int
     summary_markdown: str
     created_at: str
-
-
-class NotePreview(BaseModel):
-    id: Optional[int] = None
-    summary_preview: Optional[str] = None
 
 
 class SessionWithNote(Session):
@@ -73,5 +101,15 @@ class NoteWithSession(Note):
     duration_seconds: int
 
 
-class GenerateNoteRequest(BaseModel):
-    transcript: str
+class AskNoteRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=2000)
+
+
+class NoteQuestion(BaseModel):
+    id: int
+    note_id: int
+    question: str
+    answer: str
+    created_at: str
+
+

@@ -1,9 +1,29 @@
+import logging
 import os
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+# Conservative char budget (~4 chars/token) that stays well under both Groq's
+# 128k-token window (Llama 3.3 70B) and Claude's 200k-token window once the
+# system prompt and completion budget are accounted for. Calls longer than
+# this are condensed map-reduce style before being sent to the provider.
+MAX_TRANSCRIPT_CHARS = int(os.getenv("MAX_TRANSCRIPT_CHARS", "150000"))
+CONDENSE_CHUNK_CHARS = int(os.getenv("CONDENSE_CHUNK_CHARS", "20000"))
+
+ERROR_NOTICE = (
+    "\n\n---\n⚠️ Генерация прервана: AI-провайдер временно недоступен. "
+    "Попробуйте сгенерировать конспект ещё раз через минуту.\n"
+)
+
+CONDENSE_SYSTEM = """Сожми этот фрагмент транскрипции созвона в подробные тезисы на русском языке.
+Сохрани всю конкретику: названия университетов, страны, специальности, баллы, даты, суммы, имена, \
+принятые решения и договорённости. Не добавляй ничего, чего не было сказано. Пиши тезисами, без вступлений."""
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
@@ -195,31 +215,36 @@ DEMO_MARKDOWN = """# Назначение созвона
 Главный следующий шаг — студент записывается на IELTS, консультант готовит список вузов."""
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Provider dispatch with runtime fallback ───────────────────────────────────
+#
+# Groq/Anthropic are tried in priority order on every call (not just once at
+# startup). If a provider fails before any output was produced, the next one
+# in the chain is tried transparently. If it fails mid-stream (output already
+# sent to the client), switching providers would duplicate content, so the
+# failure is surfaced as a visible notice instead of silently retried.
 
-def _active_provider() -> str:
+def _provider_chain() -> list[str]:
+    chain = []
     if GROQ_API_KEY:
-        return "groq"
+        chain.append("groq")
     if ANTHROPIC_API_KEY:
-        return "anthropic"
-    return "demo"
+        chain.append("anthropic")
+    return chain or ["demo"]
 
 
-# ── Streaming generators ──────────────────────────────────────────────────────
-
-async def stream_periodic_summary(recent_text: str) -> AsyncGenerator[str, None]:
-    provider = _active_provider()
-
+async def _stream_provider(
+    provider: str, system: str, user_message: str, max_tokens: int
+) -> AsyncGenerator[str, None]:
     if provider == "groq":
         from groq import AsyncGroq
         client = AsyncGroq(api_key=GROQ_API_KEY)
         stream = await client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
-                {"role": "system", "content": PERIODIC_SYSTEM},
-                {"role": "user", "content": recent_text},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
             ],
-            max_tokens=400,
+            max_tokens=max_tokens,
             temperature=0.3,
             stream=True,
         )
@@ -227,21 +252,126 @@ async def stream_periodic_summary(recent_text: str) -> AsyncGenerator[str, None]
             text = chunk.choices[0].delta.content
             if text:
                 yield text
-
     elif provider == "anthropic":
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         async with client.messages.stream(
-            model="claude-sonnet-4-6",
-            max_tokens=400,
-            system=PERIODIC_SYSTEM,
-            messages=[{"role": "user", "content": recent_text}],
+            model=ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
         ) as stream:
             async for text in stream.text_stream:
                 yield text
-
     else:
-        yield "Краткое резюме: ученик активно работал, разбирали новый материал."
+        raise RuntimeError("no AI provider configured")
+
+
+async def _stream_with_fallback(
+    system: str, user_message: str, max_tokens: int, demo_chunks: list[str]
+) -> AsyncGenerator[str, None]:
+    chain = _provider_chain()
+    if chain == ["demo"]:
+        for chunk in demo_chunks:
+            yield chunk
+        return
+
+    for provider in chain:
+        yielded = False
+        try:
+            async for chunk in _stream_provider(provider, system, user_message, max_tokens):
+                yielded = True
+                yield chunk
+            return
+        except Exception:
+            logger.exception("AI provider %r failed during streaming", provider)
+            if yielded:
+                yield ERROR_NOTICE
+                return
+            continue  # nothing sent yet for this provider — safe to fall back
+
+    yield ERROR_NOTICE
+
+
+async def _complete_provider(provider: str, system: str, user_message: str, max_tokens: int) -> str:
+    if provider == "groq":
+        from groq import AsyncGroq
+        client = AsyncGroq(api_key=GROQ_API_KEY)
+        response = await client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.1,
+        )
+        return response.choices[0].message.content or ""
+    if provider == "anthropic":
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.1,
+            system=system,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        return "".join(block.text for block in response.content if hasattr(block, "text"))
+    raise RuntimeError("no AI provider configured")
+
+
+async def _complete_with_fallback(system: str, user_message: str, max_tokens: int) -> str:
+    last_error: Exception | None = None
+    for provider in _provider_chain():
+        if provider == "demo":
+            raise RuntimeError("no AI provider configured")
+        try:
+            return await _complete_provider(provider, system, user_message, max_tokens)
+        except Exception as exc:
+            last_error = exc
+            logger.exception("AI provider %r failed", provider)
+            continue
+    raise RuntimeError("all AI providers failed") from last_error
+
+
+async def _condense_transcript(transcript: str) -> str:
+    """Map-reduce a transcript that's too long for a single context window."""
+    if len(transcript) <= MAX_TRANSCRIPT_CHARS:
+        return transcript
+
+    logger.info("Condensing %d-char transcript before sending it to the AI provider", len(transcript))
+    lines = transcript.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        if current and current_len + len(line) > CONDENSE_CHUNK_CHARS:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+        current.append(line)
+        current_len += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+
+    summaries = []
+    for index, chunk in enumerate(chunks):
+        try:
+            summary = await _complete_with_fallback(CONDENSE_SYSTEM, chunk, max_tokens=500)
+        except RuntimeError:
+            # Provider unavailable mid-condensation: keep the raw chunk (capped)
+            # rather than silently dropping that part of the call.
+            summary = chunk[:CONDENSE_CHUNK_CHARS]
+        summaries.append(f"[Часть {index + 1}/{len(chunks)}]\n{summary}")
+    return "\n\n".join(summaries)
+
+
+# ── Streaming generators ──────────────────────────────────────────────────────
+
+async def stream_periodic_summary(recent_text: str) -> AsyncGenerator[str, None]:
+    demo_chunks = ["Краткое резюме: ученик активно работал, разбирали новый материал."]
+    async for chunk in _stream_with_fallback(PERIODIC_SYSTEM, recent_text, max_tokens=400, demo_chunks=demo_chunks):
+        yield chunk
 
 
 async def stream_final_note(
@@ -253,8 +383,7 @@ async def stream_final_note(
     date: str,
     duration: str,
 ) -> AsyncGenerator[str, None]:
-    provider = _active_provider()
-
+    transcript = await _condense_transcript(transcript)
     user_message = FINAL_USER_TEMPLATE.format(
         transcript=transcript,
         student_name=student_name,
@@ -264,37 +393,33 @@ async def stream_final_note(
         date=date,
         duration=duration,
     )
+    demo_chunks = [DEMO_MARKDOWN[i:i + 60] for i in range(0, len(DEMO_MARKDOWN), 60)]
+    async for chunk in _stream_with_fallback(FINAL_SYSTEM, user_message, max_tokens=3000, demo_chunks=demo_chunks):
+        yield chunk
 
-    if provider == "groq":
-        from groq import AsyncGroq
-        client = AsyncGroq(api_key=GROQ_API_KEY)
-        stream = await client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": FINAL_SYSTEM},
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=3000,
-            temperature=0.3,
-            stream=True,
-        )
-        async for chunk in stream:
-            text = chunk.choices[0].delta.content
-            if text:
-                yield text
 
-    elif provider == "anthropic":
-        import anthropic
-        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        async with client.messages.stream(
-            model="claude-sonnet-4-6",
-            max_tokens=3000,
-            system=FINAL_SYSTEM,
-            messages=[{"role": "user", "content": user_message}],
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+async def answer_from_transcript(question: str, transcript: str, summary: str) -> str:
+    """Answer only from the persisted source transcript; the summary is secondary context."""
+    system = (
+        "Ты отвечаешь на вопросы менеджера о конкретном созвоне. "
+        "Используй только факты из транскрипции и конспекта ниже. "
+        "Если ответа в данных нет, прямо скажи: «В созвоне это не обсуждалось». "
+        "Не додумывай. Отвечай кратко и по-русски."
+    )
+    transcript = await _condense_transcript(transcript)
+    user = f"""ВОПРОС:
+{question}
 
-    else:
-        for chunk in [DEMO_MARKDOWN[i:i+60] for i in range(0, len(DEMO_MARKDOWN), 60)]:
-            yield chunk
+КОНСПЕКТ:
+{summary}
+
+ПОЛНАЯ ТРАНСКРИПЦИЯ:
+{transcript}
+"""
+    if _provider_chain() == ["demo"]:
+        return "AI-провайдер не настроен. Добавьте GROQ_API_KEY или ANTHROPIC_API_KEY на сервере."
+    try:
+        answer = await _complete_with_fallback(system, user, max_tokens=800)
+        return answer or "В созвоне это не обсуждалось."
+    except RuntimeError:
+        return "AI-провайдер временно недоступен. Попробуйте задать вопрос ещё раз через минуту."

@@ -1,3 +1,10 @@
+export interface Manager {
+  id: number;
+  email: string;
+  full_name: string;
+  role: "manager" | "admin" | string;
+}
+
 export interface Session {
   id: number;
   student_name: string;
@@ -8,7 +15,8 @@ export interface Session {
   started_at: string;
   ended_at: string | null;
   duration_seconds: number;
-  status: "active" | "completed";
+  status: "active" | "completed" | "abandoned";
+  last_heartbeat_at?: string | null;
 }
 
 export interface Transcript {
@@ -17,6 +25,8 @@ export interface Transcript {
   text: string;
   timestamp: string;
   speaker?: string | null;
+  client_segment_id?: string | null;
+  sequence_no?: number | null;
 }
 
 export interface Note {
@@ -44,4 +54,18 @@ export interface NoteWithSession extends Note {
   call_description: string;
   started_at: string;
   duration_seconds: number;
+}
+
+export interface NoteQuestion {
+  id: number;
+  note_id: number;
+  question: string;
+  answer: string;
+  created_at: string;
+}
+
+export interface AdminManager extends Manager {
+  created_at: string;
+  google_linked: boolean;
+  session_count: number;
 }

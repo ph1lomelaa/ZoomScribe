@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zoomscribe}
+      POSTGRES_USER: ${POSTGRES_USER:-zoomscribe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - zoomscribe_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zoomscribe} -d ${POSTGRES_DB:-zoomscribe}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     container_name: zoomscribe_backend
     build:
@@ -6,13 +23,25 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8000
-      DB_PATH: /app/data/scribe.db
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-zoomscribe}:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/${POSTGRES_DB:-zoomscribe}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
-    volumes:
-      - backend_data:/app/data
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8080/api/auth/google/callback}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - zoomscribe_network
     healthcheck:
@@ -26,8 +55,6 @@ services:
     container_name: zoomscribe_frontend
     build:
       context: ./frontend
-      args:
-        VITE_DEEPGRAM_API_KEY: ${VITE_DEEPGRAM_API_KEY:-}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8080}:80"
@@ -38,7 +65,7 @@ services:
       - zoomscribe_network
 
 volumes:
-  backend_data:
+  postgres_data:
 
 networks:
   zoomscribe_network:
