@@ -33,10 +33,7 @@ interface EmptyStateProps {
 export function EmptyState({ title, description, action }: EmptyStateProps) {
   return (
     <div className="card w-full py-10 px-5 text-center">
-      <div className="w-12 h-12 mx-auto rounded-full border border-[#d9d7d1] text-[#29292b] grid place-items-center text-2xl">
-        +
-      </div>
-      <h3 className="mt-4 font-semibold text-[#202023]">{title}</h3>
+      <h3 className="font-semibold text-[#202023]">{title}</h3>
       <p className="mt-2 text-sm text-[#64625d]">{description}</p>
       {action}
     </div>
