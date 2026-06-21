@@ -3,6 +3,7 @@ export interface Manager {
   email: string;
   full_name: string;
   role: "manager" | "admin" | string;
+  has_password: boolean;
 }
 
 export interface Session {

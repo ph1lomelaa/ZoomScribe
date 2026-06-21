@@ -42,6 +42,11 @@ export const register = (full_name: string, email: string, password: string) =>
     method: "POST", body: JSON.stringify({ full_name, email, password }),
   });
 export const logout = () => req<void>("/auth/logout", { method: "POST" });
+export const setPassword = (newPassword: string, currentPassword?: string) =>
+  req<Manager>("/auth/password", {
+    method: "POST",
+    body: JSON.stringify({ new_password: newPassword, current_password: currentPassword }),
+  });
 
 export const startGoogleLogin = (next = "/") => {
   const url = new URL(`${BASE}/auth/google/start`, window.location.origin);

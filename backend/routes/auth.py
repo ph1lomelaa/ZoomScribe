@@ -31,7 +31,7 @@ from auth import (
 )
 from database import get_db_session, now_iso
 from db_models import ManagerRecord
-from models import LoginRequest, Manager, RegisterRequest
+from models import LoginRequest, Manager, RegisterRequest, SetPasswordRequest
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -43,6 +43,7 @@ def manager_view(manager: ManagerRecord) -> Manager:
         email=manager.email,
         full_name=manager.full_name,
         role=manager.role or "manager",
+        has_password=bool(manager.password_hash),
     )
 
 
@@ -244,4 +245,25 @@ async def logout(
 
 @router.get("/me", response_model=Manager)
 async def me(manager: ManagerRecord = Depends(current_manager)):
+    return manager_view(manager)
+
+
+@router.post("/password", response_model=Manager)
+async def set_password(
+    body: SetPasswordRequest,
+    manager: ManagerRecord = Depends(current_manager),
+    db: AsyncSession = Depends(get_db_session),
+):
+    # Accounts created via Google have no password_hash at all — anyone
+    # already authenticated (via their valid Google-issued session) can set
+    # one for the first time. If a password already exists, changing it
+    # requires proving you know the current one, same as any password change.
+    if manager.password_hash:
+        if not body.current_password or not await run_sync(
+            verify_password, body.current_password, manager.password_hash
+        ):
+            raise HTTPException(status_code=401, detail="Текущий пароль введён неверно")
+    manager.password_hash = await run_sync(hash_password, body.new_password)
+    await db.commit()
+    await db.refresh(manager)
     return manager_view(manager)

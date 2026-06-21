@@ -8,6 +8,7 @@ class Manager(BaseModel):
     email: str
     full_name: str
     role: str = "manager"
+    has_password: bool = False
 
 
 class AdminManager(Manager):
@@ -29,6 +30,13 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class SetPasswordRequest(BaseModel):
+    # Required only when the account already has a password (verified
+    # server-side against the stored hash, not trusted from has_password alone).
+    current_password: Optional[str] = None
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class SessionCreate(BaseModel):

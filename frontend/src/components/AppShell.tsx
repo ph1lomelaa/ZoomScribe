@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import SetPasswordModal from "./SetPasswordModal";
 
 const nav = [
   { to: "/", label: "Обзор", icon: "home", end: true },
@@ -30,7 +31,7 @@ function LogoMark() {
   );
 }
 
-function SidebarContent({ close }: { close?: () => void }) {
+function SidebarContent({ close, onOpenPasswordModal }: { close?: () => void; onOpenPasswordModal: () => void }) {
   const { manager, isAdmin, signOut } = useAuth();
   const navigate = useNavigate();
   const initials = manager?.full_name.split(" ").map((part) => part[0]).slice(0, 2).join("") || "ZS";
@@ -86,6 +87,15 @@ function SidebarContent({ close }: { close?: () => void }) {
             <button
               type="button"
               role="menuitem"
+              onClick={() => { setAccountOpen(false); onOpenPasswordModal(); close?.(); }}
+              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-[#363638] hover:bg-[#eeece7]"
+            >
+              <span aria-hidden="true">🔑</span>
+              {manager?.has_password ? "Изменить пароль" : "Задать пароль"}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               onClick={async () => { await signOut(); navigate("/login"); close?.(); }}
               className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-[#8e3d34] hover:bg-[#fbf0ee]"
             >
@@ -115,10 +125,11 @@ function SidebarContent({ close }: { close?: () => void }) {
 
 export default function AppShell() {
   const [open, setOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   return (
     <div className="min-h-screen bg-[#f8f7f3]">
       <aside className="hidden md:flex fixed inset-y-0 left-0 z-50 w-60 bg-[#fbfaf7] border-r border-[#dfddd7] flex-col">
-        <SidebarContent />
+        <SidebarContent onOpenPasswordModal={() => setPasswordModalOpen(true)} />
       </aside>
       <header className="md:hidden sticky top-0 z-40 h-16 px-4 bg-[#fbfaf7] border-b border-[#dfddd7] flex items-center justify-between">
         <button
@@ -141,10 +152,11 @@ export default function AppShell() {
         <div className="md:hidden fixed inset-0 z-50 flex">
           <button aria-label="Закрыть меню" className="absolute inset-0 bg-slate-950/50" onClick={() => setOpen(false)} />
           <aside className="relative w-72 max-w-[85vw] bg-[#fbfaf7] flex flex-col animate-slide-up">
-            <SidebarContent close={() => setOpen(false)} />
+            <SidebarContent close={() => setOpen(false)} onOpenPasswordModal={() => setPasswordModalOpen(true)} />
           </aside>
         </div>
       )}
+      {passwordModalOpen && <SetPasswordModal onClose={() => setPasswordModalOpen(false)} />}
       <main className="workspace-paper md:pl-60 min-h-screen">
         <Outlet />
       </main>

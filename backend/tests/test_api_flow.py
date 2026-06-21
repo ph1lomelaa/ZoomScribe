@@ -524,6 +524,74 @@ class ApiFlowTest(unittest.IsolatedAsyncioTestCase):
         finally:
             os.environ["ADMIN_EMAILS"] = "admin@example.com"
 
+    async def test_set_password_for_google_only_account(self):
+        unauthorized = await self.manager_a.post(
+            "/api/auth/password", json={"new_password": "whatever-12345"},
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+
+        google_profile = {
+            "email": "google-only@example.com",
+            "sub": "google-sub-password-test",
+            "name": "Google Only",
+            "email_verified": True,
+        }
+        with patch("routes.auth.exchange_google_code", new=AsyncMock(return_value=google_profile)):
+            start = await self.manager_a.get("/api/auth/google/start", params={"next": "/"})
+            oauth_state = start.cookies.get("zoomscribe_google_oauth_state")
+            self.manager_a.cookies.set(
+                "zoomscribe_google_oauth_state", oauth_state, domain="test", path="/api/auth/google",
+            )
+            self.manager_a.cookies.set(
+                "zoomscribe_google_oauth_next",
+                start.cookies.get("zoomscribe_google_oauth_next"),
+                domain="test", path="/api/auth/google",
+            )
+            callback = await self.manager_a.get(
+                "/api/auth/google/callback", params={"code": "fake-code", "state": oauth_state},
+            )
+            self.assertEqual(callback.status_code, 302)
+
+        me = await self.manager_a.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertFalse(me.json()["has_password"])
+
+        # No password yet -> setting one for the first time needs no current_password.
+        first_set = await self.manager_a.post(
+            "/api/auth/password", json={"new_password": "first-password-123"},
+        )
+        self.assertEqual(first_set.status_code, 200)
+        self.assertTrue(first_set.json()["has_password"])
+
+        # The new password must actually work for a real email+password login,
+        # not just flip a flag in the response.
+        await self.manager_a.post("/api/auth/logout")
+        login = await self.manager_a.post("/api/auth/login", json={
+            "email": "google-only@example.com", "password": "first-password-123",
+        })
+        self.assertEqual(login.status_code, 200)
+
+        # Changing it again without the (now-required) current password is rejected.
+        wrong_current = await self.manager_a.post(
+            "/api/auth/password",
+            json={"current_password": "not-the-right-one", "new_password": "second-password-456"},
+        )
+        self.assertEqual(wrong_current.status_code, 401)
+
+        # With the correct current password, the change succeeds and the new
+        # password works for a fresh login.
+        correct_change = await self.manager_a.post(
+            "/api/auth/password",
+            json={"current_password": "first-password-123", "new_password": "second-password-456"},
+        )
+        self.assertEqual(correct_change.status_code, 200)
+
+        await self.manager_a.post("/api/auth/logout")
+        relogin = await self.manager_a.post("/api/auth/login", json={
+            "email": "google-only@example.com", "password": "second-password-456",
+        })
+        self.assertEqual(relogin.status_code, 200)
+
 
 def tearDownModule():
     try:

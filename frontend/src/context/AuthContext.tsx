@@ -9,6 +9,7 @@ interface AuthValue {
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (name: string, email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  updateManager: (manager: Manager) => void;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -38,7 +39,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ manager, isAdmin: manager?.role === "admin", loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider
+      value={{ manager, isAdmin: manager?.role === "admin", loading, signIn, signUp, signOut, updateManager: setManager }}
+    >
       {children}
     </AuthContext.Provider>
   );
