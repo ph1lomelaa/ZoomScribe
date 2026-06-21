@@ -45,9 +45,6 @@ export default function SetPasswordModal({ onClose }: Props) {
         {done ? (
           <>
             <h2 className="font-semibold text-lg text-[#202023]">Пароль обновлён</h2>
-            <p className="mt-2 text-sm text-[#64625d]">
-              Теперь можно входить по email и этому паролю — не только через Google.
-            </p>
             <div className="mt-6 flex justify-end">
               <button onClick={onClose} className="btn-primary">Готово</button>
             </div>
@@ -57,11 +54,6 @@ export default function SetPasswordModal({ onClose }: Props) {
             <h2 className="font-semibold text-lg text-[#202023]">
               {hasPassword ? "Изменить пароль" : "Задать пароль для входа по email"}
             </h2>
-            {!hasPassword && (
-              <p className="mt-2 text-sm text-[#64625d]">
-                Сейчас вход в этот аккаунт возможен только через Google. После сохранения сможешь входить и по email с паролем.
-              </p>
-            )}
             <div className="mt-4 space-y-3">
               {hasPassword && (
                 <label className="block text-sm font-medium text-slate-700">
@@ -86,8 +78,8 @@ export default function SetPasswordModal({ onClose }: Props) {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className="field mt-1"
-                  placeholder="минимум 8 символов"
                 />
+                <p className="mt-1 text-xs text-slate-500">Минимум 8 символов</p>
               </label>
               <label className="block text-sm font-medium text-slate-700">
                 Повторите новый пароль

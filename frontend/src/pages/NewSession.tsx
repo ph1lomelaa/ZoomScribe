@@ -36,10 +36,10 @@ export default function NewSession() {
         <p className="page-subtitle">Заполните данные перед звонком. Ваше имя добавится автоматически из профиля.</p>
         <form onSubmit={submit} className="card mt-7 p-5 sm:p-7 space-y-5">
           <label className="block text-sm font-medium text-slate-700">Имя студента
-            <input className="field mt-2" required value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="Имя и фамилия" />
+            <input className="field mt-2" required value={studentName} onChange={(e) => setStudentName(e.target.value)} />
           </label>
           <label className="block text-sm font-medium text-slate-700">Страна студента
-            <input className="field mt-2" required value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Казахстан" />
+            <input className="field mt-2" required value={country} onChange={(e) => setCountry(e.target.value)} />
           </label>
           <label className="block text-sm font-medium text-slate-700">Цель или описание созвона
             <textarea className="field mt-2 min-h-28 resize-y" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Например: первичная консультация по поступлению" />

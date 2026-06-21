@@ -90,7 +90,6 @@ function SidebarContent({ close, onOpenPasswordModal }: { close?: () => void; on
               onClick={() => { setAccountOpen(false); onOpenPasswordModal(); close?.(); }}
               className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-sm font-medium text-[#363638] hover:bg-[#eeece7]"
             >
-              <span aria-hidden="true">🔑</span>
               {manager?.has_password ? "Изменить пароль" : "Задать пароль"}
             </button>
             <button
