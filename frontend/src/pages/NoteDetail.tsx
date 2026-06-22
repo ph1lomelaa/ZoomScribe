@@ -71,7 +71,7 @@ export default function NoteDetail() {
 
   return (
     <div className="page-wrap no-print-padding">
-      <div className="max-w-5xl">
+      <div className="page-content">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 no-print">
           <div>
             <button onClick={() => navigate("/notes")} className="text-sm text-slate-500 hover:text-slate-900 mb-3">← Все конспекты</button>
