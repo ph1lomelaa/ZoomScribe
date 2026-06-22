@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 TEST_DB_PATH = tempfile.mktemp(prefix="zoomscribe-api-test-", suffix=".db")
 os.environ.pop("DATABASE_URL", None)
 os.environ["DB_PATH"] = TEST_DB_PATH
-os.environ["GROQ_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["ADMIN_EMAILS"] = "admin@example.com"
 os.environ["GOOGLE_CLIENT_ID"] = "test-google-client-id"

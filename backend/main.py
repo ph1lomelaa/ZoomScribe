@@ -44,12 +44,12 @@ app.include_router(admin_router)
 
 @app.get("/api/health")
 async def health():
-    groq_key = os.getenv("GROQ_API_KEY", "")
+    openai_key = os.getenv("OPENAI_API_KEY", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    provider = "groq" if groq_key else ("anthropic" if anthropic_key else "demo")
+    provider = "openai" if openai_key else ("anthropic" if anthropic_key else "demo")
     return {
         "status": "ok",
         "provider": provider,
-        "api_key_set": bool(groq_key or anthropic_key),
+        "api_key_set": bool(openai_key or anthropic_key),
         "deepgram_set": bool(os.getenv("DEEPGRAM_API_KEY", "")),
     }

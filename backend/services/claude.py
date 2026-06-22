@@ -4,13 +4,13 @@ from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
-# Conservative char budget (~4 chars/token) that stays well under both Groq's
-# 128k-token window (Llama 3.3 70B) and Claude's 200k-token window once the
+# Conservative char budget (~4 chars/token) that stays well under both OpenAI's
+# 128k-token window (gpt-4o-mini) and Claude's 200k-token window once the
 # system prompt and completion budget are accounted for. Calls longer than
 # this are condensed map-reduce style before being sent to the provider.
 MAX_TRANSCRIPT_CHARS = int(os.getenv("MAX_TRANSCRIPT_CHARS", "150000"))
@@ -217,7 +217,7 @@ DEMO_MARKDOWN = """# Назначение созвона
 
 # ── Provider dispatch with runtime fallback ───────────────────────────────────
 #
-# Groq/Anthropic are tried in priority order on every call (not just once at
+# OpenAI/Anthropic are tried in priority order on every call (not just once at
 # startup). If a provider fails before any output was produced, the next one
 # in the chain is tried transparently. If it fails mid-stream (output already
 # sent to the client), switching providers would duplicate content, so the
@@ -225,8 +225,8 @@ DEMO_MARKDOWN = """# Назначение созвона
 
 def _provider_chain() -> list[str]:
     chain = []
-    if GROQ_API_KEY:
-        chain.append("groq")
+    if OPENAI_API_KEY:
+        chain.append("openai")
     if ANTHROPIC_API_KEY:
         chain.append("anthropic")
     return chain or ["demo"]
@@ -235,11 +235,11 @@ def _provider_chain() -> list[str]:
 async def _stream_provider(
     provider: str, system: str, user_message: str, max_tokens: int
 ) -> AsyncGenerator[str, None]:
-    if provider == "groq":
-        from groq import AsyncGroq
-        client = AsyncGroq(api_key=GROQ_API_KEY)
+    if provider == "openai":
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         stream = await client.chat.completions.create(
-            model=GROQ_MODEL,
+            model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},
@@ -294,11 +294,11 @@ async def _stream_with_fallback(
 
 
 async def _complete_provider(provider: str, system: str, user_message: str, max_tokens: int) -> str:
-    if provider == "groq":
-        from groq import AsyncGroq
-        client = AsyncGroq(api_key=GROQ_API_KEY)
+    if provider == "openai":
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
         response = await client.chat.completions.create(
-            model=GROQ_MODEL,
+            model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},
@@ -417,7 +417,7 @@ async def answer_from_transcript(question: str, transcript: str, summary: str) -
 {transcript}
 """
     if _provider_chain() == ["demo"]:
-        return "AI-провайдер не настроен. Добавьте GROQ_API_KEY или ANTHROPIC_API_KEY на сервере."
+        return "AI-провайдер не настроен. Добавьте OPENAI_API_KEY или ANTHROPIC_API_KEY на сервере."
     try:
         answer = await _complete_with_fallback(system, user, max_tokens=800)
         return answer or "В созвоне это не обсуждалось."

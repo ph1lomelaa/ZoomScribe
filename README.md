@@ -9,7 +9,7 @@
 - Изоляция созвонов, транскриптов и конспектов по менеджеру
 - Live-транскрипция через Deepgram без публикации постоянного API-ключа в браузере
 - Локальная очередь фрагментов, идемпотентная отправка и восстановление после разрыва сети
-- AI-конспект через Groq или Anthropic
+- AI-конспект через OpenAI или Anthropic
 - Вопросы AI по сохранённому полному транскрипту
 - Адаптивный кабинет для телефона, планшета и компьютера
 - Мультиязычность: русский, английский, казахский
@@ -138,8 +138,8 @@ zoomscribe/
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `GROQ_API_KEY` | Ключ Groq API, имеет приоритет над Anthropic | `` |
-| `GROQ_MODEL` | Модель Groq | `llama-3.3-70b-versatile` |
+| `OPENAI_API_KEY` | Ключ OpenAI API, имеет приоритет над Anthropic | `` |
+| `OPENAI_MODEL` | Модель OpenAI | `gpt-4o-mini` |
 | `ANTHROPIC_API_KEY` | Ключ Anthropic API | `` |
 | `DEEPGRAM_API_KEY` | Серверный ключ Deepgram | `` |
 | `GOOGLE_CLIENT_ID` | OAuth client ID из Google Cloud | `` |
@@ -160,5 +160,5 @@ zoomscribe/
 - Backend: Python / FastAPI / PostgreSQL (SQLite для dev)
 - Frontend: React / Vite / Tailwind
 - Production frontend: Nginx
-- AI: Groq или Anthropic
+- AI: OpenAI или Anthropic
 - Speech-to-text: Deepgram browser WebSocket

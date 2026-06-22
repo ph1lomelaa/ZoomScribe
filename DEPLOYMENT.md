@@ -48,7 +48,7 @@ cp .env.example .env
 nano .env
 ```
 
-Set at least `GROQ_API_KEY` or `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, a unique `POSTGRES_PASSWORD`, and the Google OAuth variables if you want Google login.
+Set at least `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, a unique `POSTGRES_PASSWORD`, and the Google OAuth variables if you want Google login.
 
 5. Start:
 
